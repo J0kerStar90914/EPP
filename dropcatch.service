@@ -1,0 +1,11 @@
+[Unit]
+Description=Dropcatch service
+
+[Service]
+User=joker
+WorkingDirectory=/home/dropcatch/src
+ExecStart=/home/dropcatch/src/dropcatch
+Restart=no
+
+[Install]
+WantedBy=multi-user.target
