@@ -13,7 +13,8 @@
 #include <netdb.h>
 #include <signal.h>
 #include "mysql_connection.h"
-
+#include <sys/stat.h> // stat
+#include <errno.h>    // errno, ENOENT, EEXIST
 #include <cppconn/driver.h>
 #include <cppconn/exception.h>
 #include <cppconn/resultset.h>
@@ -23,12 +24,14 @@
 #include <openssl/err.h>
 
 #include <ctime>
-
+#include <grp.h>
+#include <pwd.h>
 #define FAIL    -1
 #define LOG_INFO(a)    log_save(0, a)
 #define LOG_DEBUG(a)    log_save(1, a)
 #define LOG_WARN(a)    log_save(2, a)
-
+#define LOG_MESSAGE(a) log_save(-1,a)
+#define LOG_ERROR(a)    log_save(3, a)
 #define IN
 #define OUT
 using namespace std;
@@ -41,7 +44,7 @@ void  SIGKILL_handler(int);        /* for SIGKILL                  */
 int OpenConnection(const char *hostname, int port);		/* This if function for socket connection*/
 SSL_CTX* InitCTX(void);			/*init SSL_CTX structure*/
 void ShowCerts(SSL* ssl);		/*show server's certificate*/
-void log_save(int type, char *message);  /*save log to file*/
+void log_save(int type, const char *message);  /*save log to file*/
 void makeChar(unsigned int n, char*p);  /*make size value n to p*/
 int getInt(char*p);					/*extract size value*/
 int checkResult(char *presult);   /*check result from string*/
@@ -54,28 +57,34 @@ long long int mi(int y, int m, int d, int h, int mm, int ss, long long int nanos
 long long int timeSub(const char *time1);		/*substract time with current time*/
 void *epp_thread_body(void * arg);	/*main thread body*/
 int read_conf_file();				/*read conf file*/	
+void drop_root_priviledge_if_set();		/*after running it drops root priviledge*/
+void do_chown (const char *file_path,const char *username); 	/*log file chown*/
 /************************************************************************************
  *Global variable definitions
  ************************************************************************************/
 int g_threadworking=0;				/*thread working variable*/
-char log_file[200] = {0};			/*log file path*/
+char log_file[200] = "dropcatch.log";			/*log file path*/
 char db_host[100]={0};				/*mysql database hostname*/
 char db_user[100]={0};				/*mysql database username*/	
 char db_pass[100]={0};				/*mysql database password*/	
 char db_name[20]={0};				/*mysql database name*/	
-char db_port[6] = {0};				/*mysql database port*/
+char db_port[6] = "3306";				/*mysql database port*/
 char epp_host[100]={0};				/*EPP server name*/
 char epp_port[6] = {0};				/*EPP server port*/
 char epp_password[100]={0};			/*EPP Client password*/
 char epp_clid[20] = {0};			/*EPP client ID*/
-float prepare_time = 0.1;			/*send create xml start time*/
+float prepare_time = 1;			/*send create xml start time*/
 float final_time = 0.01;			/*send interval*/
-char log_level[50] = {0};			/*log level*/
+char log_level[50] = "DEBUG|INFO|WARN|ERROR";			/*log level*/
 char table_drop[100]={0};			/*drop table name*/
 char table_catch[100]={0};			/*catch table name*/
 char *prg;							/*program's name for restart*/
 char curtime_string[25] = {0};		/*current time string format is YYYY-MM-dd hh:mm:ss*/
-char conf_file_name[260] = "epp.conf";
+char conf_file_name[260] = {0};		/*config file name*/
+int log_level_flags[4]={0};	/*log level flags*/
+char sys_user[50] = "dropcatch";		/* System user*/
+int nwaiting_ids[100] = {0};	/*waiting domain registrant.*/
+int nwaiting_cnt = 0;		/*waiting count*/
 /***********************************************************************
  * This function get current time and convert it to UTC.
  * save time as string to curtime_string
@@ -87,7 +96,7 @@ void calc_current_time() {
 
     memset(curtime_string, 0, 25);
     //gmtm->tm_year, gmtm->tm_mon, gmtm->tm_mday, gmtm->tm_hour, gmtm->tm_min, gmtm->tm_sec
-    sprintf(curtime_string, "%04d-%02d-%02d %02d:%02d:%02d", gmtm->tm_year+1900, gmtm->tm_mon+1, gmtm->tm_mday, gmtm->tm_hour, gmtm->tm_min, gmtm->tm_sec);
+    sprintf(curtime_string, "%04d %02d %02d %02d %02d %02d", gmtm->tm_year+1900, gmtm->tm_mon+1, gmtm->tm_mday, gmtm->tm_hour, gmtm->tm_min, gmtm->tm_sec);
 }
 /***********************************************************************
  * This function get length from string.
@@ -146,24 +155,115 @@ int checkResult(IN char *presult) {
 
     return 0;
 }
+/*********************************************************************************
+* This function check directory exist.
+* path is directory name
+************************************************************************************/
+bool isDirExist(const std::string& path)
+{
+    struct stat info;
+    if (stat(path.c_str(), &info) != 0)
+    {
+        return false;
+    }
+    return (info.st_mode & S_IFDIR) != 0;
+}
+/*************************************************************************************
+* This function make directory for you.
+* file path is directory path.
+**************************************************************************************/
+bool makePath(const std::string& path)
+{
+    mode_t mode = 0755;
+      
+    int ret = mkdir(path.c_str(), mode);
+    if (ret == 0)
+        return true;
+		
+    switch (errno)
+    {
+    case ENOENT:
+        // parent didn't exist, try to create it
+        {
+            int pos = path.find_last_of('/');
+            if (pos == (int)std::string::npos)
+                return false;
+            if (!makePath( path.substr(0, pos) ))
+                return false;
+        }
+        // now, try to create again
+        return 0 == mkdir(path.c_str(), mode);
+    case EEXIST:
+        // done!
+        return isDirExist(path);
+
+    default:
+        return false;
+    }
+}
+
+/*************************************************************************************
+* This function set onwer of file_path to username
+* before dropping root priviledge, we have toset this.
+*************************************************************************************/
+void do_chown (const char *file_path,
+               const char *username) 
+{
+    struct passwd *pwd = (struct passwd*)calloc(1, sizeof(struct passwd));
+    if(pwd == NULL)
+    {
+        fprintf(stderr, "Failed to allocate struct passwd for getpwnam_r.\n");
+        exit(4);
+    }
+    size_t buffer_len = sysconf(_SC_GETPW_R_SIZE_MAX) * sizeof(char);
+    char *buffer = (char*)malloc(buffer_len);
+    if(buffer == NULL)
+    {
+        fprintf(stderr, "Failed to allocate buffer for getpwnam_r.\n");
+        exit(4);
+    }
+    getpwnam_r(username, pwd, buffer, buffer_len, &pwd);
+    if(pwd == NULL)
+    {
+        fprintf(stderr, "getpwnam_r failed to find requested entry.\n");
+        exit(4);
+    }
+    //fprintf(stderr,"uid: %d\n", pwd->pw_uid);
+    //fprintf(stderr,"gid: %d\n", pwd->pw_gid);
+    if (chown(file_path, pwd->pw_uid, pwd->pw_gid) == -1) {
+      fprintf(stderr, "chown fail");
+      exit(4);
+    }
+    free(pwd);
+    free(buffer);
+}
 /***********************************************************************
  * This function save log to file.
  * log file paths can be get in epp.conf config file	
  * type is log type, message is string.
  ************************************************************************/
-void log_save(IN int type, IN char *message) {
+void log_save(IN int type, IN const char *message) {
     calc_current_time();
-    FILE *fp = fopen(log_file, "r+");	/*open file with read/write*/
+    FILE *fp = fopen(log_file, "a");	/*open file with read/write*/
     if(fp == NULL)
         fp = fopen(log_file, "w");	/*if no file, then create file*/
+    if(fp == NULL) {
+      fprintf(stderr, "Unable to open log file: %s\n", log_file);
+      exit(3);
+    }
     fseek(fp, 0, 2);	/*go to end of file*/
     if(type == 0)
-        fprintf(fp, "%s INFO : ",curtime_string);	/*Info message*/
+        fprintf(fp, "%s: INFO: ",curtime_string);	/*Info message*/
     else if(type == 1)
-        fprintf(fp, "%s DEBUG : ",curtime_string);	/*debug message*/
+        fprintf(fp, "%s: DEBUG: ",curtime_string);	/*debug message*/
     else if(type == 2)
-        fprintf(fp, "%s WARN : ",curtime_string);	/*warning message*/
+        fprintf(fp, "%s: WARN: ",curtime_string);	/*warning message*/
+    else if(type == 3)
+        fprintf(fp, "%s: ERROR: ",curtime_string);	/*eror message*/ 
+    else if(type == -1)
+        fprintf(fp, "%s: ",curtime_string);	/*eror message*/       
     fprintf(fp,message);
+    fprintf(fp, "\n");
     fclose(fp);
 }
 /***********************************************************************
@@ -287,6 +387,53 @@ long long int timeSub(IN const char *time1) {
     long long int nsecs = mi(yy - 1900, mm - 1, dd, hh, mmin, ss, 0) - mi(gmtm->tm_year, gmtm->tm_mon, gmtm->tm_mday, gmtm->tm_hour, gmtm->tm_min, gmtm->tm_sec, ts.tv_nsec) ;		/*substract with second*/
     return nsecs;							/*return second diffrence*/
 }
+/**********************************************************************
+*  check waiting ids and if new id then save it to log file.
+*  then add new id to waiting_ids array
+**************************************************************************/
+void check_ids(int id, string domain) {
+  int i = 0;
+  int exist = 0;
+  char buf[200] = {0};
+  for(i = 0; i < nwaiting_cnt; i++) {
+    if(nwaiting_ids[i] == id) {
+      exist = 1;
+      break;
+    }
+  }
+  if(exist == 0) {
+    sprintf(buf, "Found domain to catch: %s", domain.c_str());
+    LOG_INFO(buf);
+    nwaiting_ids[nwaiting_cnt++] = id;
+  }
+}
+/*************************************************************
+*  save domain_catch table contentto log file.
+*  read all conttent where it is waiting or failed or success.
+*  and grab waiting status
+**************************************************************/
+void save_domain_catch_to_log(sql::Connection *con) {
+  sql::Statement *stmt;
+  sql::ResultSet *res;
+  char buf[0x1000];
+  stmt = con->createStatement();
+  memset(buf, 0, 0x1000);
+  sprintf(buf, "SELECT dc.id, dd.domain, dd.dropping, dd.roid, dr.id as drid, dc.status FROM %s as dc INNER JOIN %s as dd ON dc.domain_drop_id=dd.id INNER JOIN domain_registrants as dr ON dr.id=dc.registrant_id;", table_catch, table_drop);
+  res = stmt->executeQuery(buf);	/*mysql get string*/
+  while (res->next()) {
+    string id = res->getString(1);		/*id of drop_cathes*/
+    string domain = res->getString(2);	/*domain to register*/	
+    string dropping = res->getString(3);	/*expired time*/
+    string roid = res->getString(4);	/*repo id*/
+    string drid = res->getString(5);	/*domain_registrants id*/
+    string status = res->getString(6);
+    if(status == "waiting") {
+      nwaiting_ids[nwaiting_cnt++] = stoi(id);
+    }
+    sprintf(buf, "Domains in table_catch : %s, status : %s", domain.c_str(), status.c_str());
+    LOG_INFO(buf);
+  }
+}
 /***********************************************************************
  * This function is Main thread controller body
  * work as follows.
@@ -323,12 +470,18 @@ void *epp_thread_body(IN void * arg) {
     connection_properties["schema"] = db_name;
     connection_properties["port"] = atoi(db_port);
     connection_properties["OPT_RECONNECT"] = true;
-
+    
     driver = get_driver_instance();
     con = driver->connect(connection_properties);		/*mysql connect*/
-    LOG_WARN("MariaDB connection.\n");
+    if(con == NULL) {
+      LOG_ERROR("MariaDB connection failed.");
+      exit(4);
+    }
+    LOG_INFO("MariaDB connection success.");
+    save_domain_catch_to_log(con);
+    
     SSL_CTX *ctx;						/*structure for Ssl communication*/
-    int server,i;						/*socket varialbe*/
+    int server;						/*socket varialbe*/
     SSL *ssl;							/*SSL layer varialbe combined with server socket*/
 
     char buf[0x1000] = {0};			/*variable for thread*/
@@ -349,10 +502,10 @@ void *epp_thread_body(IN void * arg) {
 
     if ( SSL_connect(ssl) == FAIL ) {  /* perform the connection */
         ERR_print_errors_fp(stderr);
-        LOG_WARN("EPP server connection failed.\n");
-        return NULL;
+        LOG_ERROR("EPP server connection failed.");
+        exit(4);
     }
-    LOG_WARN("EPP server connection.\n");
+    LOG_WARN("EPP server connection.");
     //printf("connected with %s encrytion\n",SSL_get_cipher(ssl));
     ShowCerts(ssl);				/*show server cerificate*/
     ball = 0;					/*all received byte*/
@@ -377,7 +530,7 @@ void *epp_thread_body(IN void * arg) {
     nsuccess = 0;
     bytes = SSL_write(ssl,buf,nn);	/*write login body*/	
 
-    LOG_DEBUG("send data to server.\n");
+    LOG_DEBUG("send data to server.");
     while(1) {
         usleep(50000);
         memset(buf, 0, 0x1000);
@@ -402,11 +555,12 @@ void *epp_thread_body(IN void * arg) {
     }
     if(nsuccess == 1) {
         //printf("Login success\n");		/*display login*/
-        LOG_DEBUG("Login success.\n");
+        LOG_DEBUG("Login success.");
     }
     else {
         //printf("Login failure\n");
-        LOG_DEBUG("Login failed.\n");
+        LOG_DEBUG("Login failed.");
+        exit(4);
     }
     nsecs = 0;
     char tempbuf[20]={0};
@@ -440,7 +594,7 @@ void *epp_thread_body(IN void * arg) {
             string disclose_address = res->getString(13);	/*disclose addr*/
             string telephone = res->getString(14);		/*telephone*/
             string email = res->getString(15);		/*email*/
-
+            check_ids(stoi(id), domain);
             nsecbefore = timeSub(dropping.c_str()) / 1000;	/*time minus in ms*/
             //printf("%lld second remaining.\n", nsecbefore/1000000);
             if(reg_id.length() == 0) { //It need register first
@@ -506,7 +660,7 @@ void *epp_thread_body(IN void * arg) {
                 //  printf("%c", buf[i]);
                 //}
                 memset(buf, 0, 0x1000);
-                sprintf(buf, "daemon register attempt start at : %lldms\n", ll/1000000);
+                sprintf(buf, "daemon register attempt start at : %lldms", ll/1000000);
                 ball = 0; nheader= 0;nsuccess = 0;	/*init variabls*/
                 LOG_INFO(buf);
                 while(1) {
@@ -534,7 +688,7 @@ void *epp_thread_body(IN void * arg) {
                 long long int ln = get_tick();
                 if(nsuccess == 1) {
                     memset(buf, 0, 0x1000);
-                    sprintf(buf, "daemon register success. time spent is : %lld ms.\n", (ln-ll)/1000000);
+                    sprintf(buf, "daemon register success. time spent is : %lld ms.", (ln-ll)/1000000);
                     //printf("domain create success\n");		/*save state to domain_catches*/
                     LOG_INFO(buf);
                     memset(buf, 0, 0x1000);
@@ -542,7 +696,7 @@ void *epp_thread_body(IN void * arg) {
                 }
                 else {
                     memset(buf, 0, 0x1000);
-                    sprintf(buf, "daemon register fail. time spent is : %lld ms\n", (ln-ll)/1000000);
+                    sprintf(buf, "daemon register fail. time spent is : %lld ms.", (ln-ll)/1000000);
                     //printf("domain already exist or failed.\n");
                     LOG_INFO(buf);
                     memset(buf, 0, 0x1000);
@@ -581,11 +735,11 @@ void *epp_thread_body(IN void * arg) {
     //printf("main thread ending.\n");
     delete res;	/*remove mysql handlers*/
     delete con;
-    LOG_WARN("EPP disconnection.\n");
+    LOG_WARN("EPP disconnection.");
     SSL_free(ssl);        /* release connection state */
     close(server);         /* close socket */
     SSL_CTX_free(ctx);        /* release context */
-    LOG_WARN("MariaDB disconnection.\n");
+    LOG_WARN("MariaDB disconnection.");
     return NULL;
 }
 /***********************************************************************
@@ -664,6 +818,27 @@ void ShowCerts(IN SSL* ssl)
     else
         printf("Info: No client certificates configured.\n");
 }
+/*****************************************************************************
+* Function for value missing.
+*******************************************************************************/
+void check_config_value_missing(IN const char*name, IN char *psval) {
+  if(strlen(psval) == 0) {
+    fprintf(stderr, "Missing config value for %s\n", name);
+    exit(2);
+  }
+}
+/*****************************************************************************
+* Function for log file save
+*******************************************************************************/
+void save_to_log_in_start(IN const char *field, IN char *value) {
+  char tmp[300] = {0};
+  int len = strlen(value);
+  if(strcmp(field, "DB_PASSWORD") == 0 || strcmp(field, "EPP_SECRET") == 0)
+    sprintf(tmp, "%s: %c********%c", field, value[0], value[len-1]);
+  else
+    sprintf(tmp, "%s: %s", field, value);
+  LOG_MESSAGE(tmp);
+}
 /***********************************************************************
  * This function read config file/
  * file name is hardcoded and epp.conf
@@ -674,24 +849,131 @@ int read_conf_file() {
     FILE *fp = fopen(conf_file_name,"r");
     if(fp == NULL)
         return 0;
+    /*Very important field*/
+    fscanf(fp, "DB_HOSTNAME %s\n", db_host);	/*read db_hostname*/
+    check_config_value_missing("DB_HOSTNAME", db_host);
+    fscanf(fp, "DB_USERNAME %s\n", db_user);	/*read db_username*/
+    check_config_value_missing("DB_USERNAME", db_user);
+    fscanf(fp, "DB_PASSWORD %s\n", db_pass);	/*read db_password*/
+    check_config_value_missing("DB_PASSWORD", db_pass);
+    fscanf(fp, "DB_DATABASE %s\n", db_name);	/*read db_database*/
+    check_config_value_missing("DB_DATABASE", db_name);
+    fscanf(fp, "DB_TABLE_DROP %s\n", table_drop);	/*read table_drop*/
+    check_config_value_missing("DB_TABLE_DROP", table_drop);
+    fscanf(fp, "DB_TABLE_CATCH %s\n", table_catch);	/*read table_catch*/ 
+    check_config_value_missing("DB_TABLE_CATCH", table_catch);   
+    fscanf(fp, "EPP_HOSTNAME %s\n", epp_host);	/*read epp hostname*/
+    check_config_value_missing("EPP_HOSTNAME", epp_host);
+    fscanf(fp, "EPP_PORT %s\n", epp_port);		/*read epp host port*/
+    check_config_value_missing("EPP_PORT", epp_port);
+    fscanf(fp, "EPP_SECRET %s\n", epp_password);	/*read epp password*/
+    check_config_value_missing("EPP_SECRET", epp_password);
+    fscanf(fp, "EPP_CLID %s\n", epp_clid);		/*read epp client*/
+    check_config_value_missing("EPP_CLIENT_ID", epp_clid);
+    
+    /*additional config value*/
     fscanf(fp, "LOG_FILE %s\n", log_file);	/*read log filename*/
     fscanf(fp, "LOG_LEVEL %s\n", log_level);  /*log level*/
-    fscanf(fp, "DB_HOSTNAME %s\n", db_host);	/*read db_hostname*/
-    fscanf(fp, "DB_USERNAME %s\n", db_user);	/*read db_username*/
-    fscanf(fp, "DB_PASSWORD %s\n", db_pass);	/*read db_password*/
-    fscanf(fp, "DB_DATABASE %s\n", db_name);	/*read db_database*/
-    fscanf(fp, "DB_TABLE_DROP %s\n", table_drop);	/*read table_drop*/
-    fscanf(fp, "DB_TABLE_CATCH %s\n", table_catch);	/*read table_catch*/
     fscanf(fp, "DB_PORT %s\n", db_port);		/*read port*/
-    fscanf(fp, "EPP_HOSTNAME %s\n", epp_host);	/*read epp hostname*/
-    fscanf(fp, "EPP_PORT %s\n", epp_port);		/*read epp host port*/
-    fscanf(fp, "EPP_SECRET %s\n", epp_password);	/*read epp password*/
-    fscanf(fp, "EPP_CLID %s\n", epp_clid);		/*read epp client*/
+    if(atoi(db_port) > 65535 || atoi(db_port) < 1024 || strlen(db_port) > 5) {
+      fprintf(stderr, "Invalid config value for database port.\n");
+      exit(2);
+    }
     fscanf(fp, "PREPARE_TIME %f\n", &prepare_time);	/*send start*/
+    if(prepare_time < 0.1) {
+      fprintf(stderr, "Invalid config value for prepare time.\n");
+      exit(2);
+    }
     fscanf(fp, "FINAL_TIME %f\n", &final_time);		/*send interval*/
+    if(final_time >= 0.1 || final_time <= 0) {
+      fprintf(stderr, "Invalid config value for final time.\n");
+      exit(2);
+    }
+    fscanf(fp, "RUN_AS %s\n", sys_user);	
     fclose(fp);
-    //printf("ftime : %f %f\n", prepare_time, final_time);
+    
+    string path = log_file;
+    int pos = path.find_last_of('/');
+    if (pos != (int)std::string::npos) {
+    	path = path.substr(0, pos);
+   	makePath(path);
+    }   
+    LOG_MESSAGE("starting.");
+    save_to_log_in_start("DB_HOSTNAME", db_host);		/*save logs*/
+    save_to_log_in_start("DB_USERNAME", db_user);
+    save_to_log_in_start("DB_PASSWORD", db_pass);
+    save_to_log_in_start("DB_DATABASE", db_name);
+    save_to_log_in_start("DB_TABLE_DROP", table_drop);
+    save_to_log_in_start("DB_TABLE_CATCH", table_catch);   
+    save_to_log_in_start("EPP_HOSTNAME", epp_host);
+    save_to_log_in_start("EPP_PORT", epp_port);
+    save_to_log_in_start("EPP_SECRET", epp_password);
+    save_to_log_in_start("EPP_CLIENT_ID", epp_clid);
+    save_to_log_in_start("LOG_FILE", log_file);
+    save_to_log_in_start("LOG_LEVEL", log_level);
+    save_to_log_in_start("DB_PORT", db_port);
+    char tmp[10] = {0};
+    sprintf(tmp, "%f", prepare_time);
+    save_to_log_in_start("PREPARE_TIME", tmp);
+    memset(tmp, 0, 10);
+    sprintf(tmp, "%f", final_time);
+    save_to_log_in_start("FINAL_TIME", tmp);
+    
+    if(strstr(log_level, "DEBUG"))
+    	log_level_flags[0] = 1;
+    if(strstr(log_level, "INFO"))
+    	log_level_flags[1] = 1;
+    if(strstr(log_level, "WARN"))
+    	log_level_flags[2] = 1;
+    if(strstr(log_level, "ERROR"))
+    	log_level_flags[3] = 1;	
     return 1;
+}
+static void
+droproot(const char *username, const char *chroot_dir)
+{
+	struct passwd *pw = NULL;
+
+	if (chroot_dir && !username) {
+		fprintf(stderr, "Chroot without dropping root is insecure\n");
+		exit(1);
+	}
+	
+	pw = getpwnam(username);
+	if (pw) {
+		if (chroot_dir) {
+			if (chroot(chroot_dir) != 0 || chdir ("/") != 0) {
+				fprintf(stderr, "Couldn't chroot/chdir to '%.64s'\n",
+				    chroot_dir);
+				exit(1);
+			}
+		}
+		if (initgroups(pw->pw_name, pw->pw_gid) != 0 ||
+		    setgid(pw->pw_gid) != 0 || setuid(pw->pw_uid) != 0) {
+			fprintf(stderr, "Couldn't change to '%.32s' uid=%lu gid=%lu\n",
+			    username, 
+			    (unsigned long)pw->pw_uid,
+			    (unsigned long)pw->pw_gid);
+			exit(1);
+		}
+	}
+	else {
+		fprintf(stderr, "Couldn't find user '%.32s'\n",
+		    username);
+		exit(1);
+	}
+}
+void drop_root_priviledge_if_set() {
+  if(getuid()) {
+    return;
+  } 
+  do_chown(log_file,sys_user);
+
+  droproot(sys_user, NULL); 
+  int nn = getuid();
+  if(log_level_flags[0] == 1&& nn!=0) {
+    LOG_MESSAGE("Dropped root privileges.");
+  }  
 }
 /***********************************************************************
  * This function is main function
@@ -701,40 +983,58 @@ int read_conf_file() {
  ************************************************************************/
 int main(int count, char *strings[])
 {
-    if(count == 3) {/*./main -c my.conf */
-      if(strcmp(strings[1],"-c") == 0) { /*we can use -c*/
-        int n = strlen(strings[2]);   /*third parameter is conf_file*/
-        n=(n>250) ? 250 : n;
-        strncpy(conf_file_name, strings[2], n);
-      }
+    if(count == 3 && strcmp(strings[1],"-c") == 0) {/*./main -c my.conf */
+      int n = strlen(strings[2]);   /*third parameter is conf_file*/
+      n=(n>250) ? 250 : n;
+      strncpy(conf_file_name, strings[2], n);
+    }
+    else{
+      sprintf(conf_file_name,"%s.cfg",strings[0]);
     }
     void *res;
     prg = strings[0];		/*save program name*/
     if(read_conf_file() == 0)				/*Load config file*/
     {
-        //printf("can not find epp.conf file.");	/*if file not found, finish*/
-        exit(0);
-    }
-    pthread_t hepp;			/*thread handler*/
-    LOG_INFO("daemon start.\n");
-    g_threadworking = 1;		/*thread working variable*/
-    pthread_create(&hepp, NULL, &epp_thread_body, NULL);	/*create thread*/
-
-    if (signal(SIGINT, SIGINT_handler) == SIG_ERR) {	/*register thread handler SIGINT*/
-        //printf("SIGINT install error\n");
+        fprintf(stderr,"Unable to find config file, tried: %s\n",conf_file_name);
         exit(1);
     }
-    if (signal(SIGHUP, SIGHUP_handler) == SIG_ERR) { /*register thread handler SIGHUP*/
+    drop_root_priviledge_if_set();
+    
+    close(1);
+    close(2);
+    close(3);
+    if(log_level_flags[0] == 1)
+      LOG_MESSAGE("Detached succesfully.");
+    
+        
+    int npid = fork();
+    if(npid == 0) {
+      LOG_MESSAGE("Startup complete child now active.");
+      pthread_t hepp;			/*thread handler*/
+      LOG_INFO("daemon start.");
+      g_threadworking = 1;		/*thread working variable*/
+      pthread_create(&hepp, NULL, &epp_thread_body, NULL);	/*create thread*/
+
+      if (signal(SIGINT, SIGINT_handler) == SIG_ERR) {	/*register thread handler SIGINT*/
+        //printf("SIGINT install error\n");
+        exit(1);
+      }
+      if (signal(SIGHUP, SIGHUP_handler) == SIG_ERR) { /*register thread handler SIGHUP*/
         //printf("SIGHUP install error\n");
         exit(2);
-    }
-    if (signal(SIGQUIT, SIGKILL_handler) == SIG_ERR) { /*register thread handler SIGQUIT*/
+      }
+      if (signal(SIGQUIT, SIGKILL_handler) == SIG_ERR) { /*register thread handler SIGQUIT*/
         //printf("SIGKILL install error\n");
         exit(3);
-    }
+      }
 
-    pthread_join(hepp, &res); free(res);	/*waiting thread finish*/
-    LOG_INFO("daemon quit\n");			/*program ends*/
+      pthread_join(hepp, &res); free(res);	/*waiting thread finish*/
+      LOG_INFO("daemon quit.");			/*program ends*/
+    }
+    else {
+      exit(0);
+    }
+    
     return 0;
 }
 
@@ -750,7 +1050,7 @@ void  SIGINT_handler(IN int sig)
     //printf("From SIGINT: just got a %d (SIGINT ^C) signal\n", sig);
     signal(sig, SIGINT_handler);
     g_threadworking = 0;
-    LOG_INFO("daemon SIGHUP | SIGINT received\n");
+    LOG_INFO("daemon SIGHUP | SIGINT received.");
 }
 
 /* ---------------------------------------------------------------- */
@@ -765,8 +1065,8 @@ void  SIGHUP_handler(IN int sig)
     //printf("From SIGHUP: just got a %d (SIGHUP ^C) signal\n", sig);
     signal(sig, SIGHUP_handler);
     g_threadworking=0;
-    LOG_INFO("daemon SIGHUP | SIGINT received\n");
-    execve(prg, NULL, NULL);
+    LOG_INFO("daemon SIGHUP | SIGINT received.");
+    execve(prg, (char* const*)prg, NULL);
     //exit(42);
 }
 /* ---------------------------------------------------------------- */
