@@ -24,8 +24,7 @@
 #include <openssl/err.h>
 #include <libconfig.h++>
 #include <ctime>
-#include <grp.h>
-#include <pwd.h>
+#include <systemd/sd-daemon.h>
 #define FAIL    -1
 #define IN
 #define OUT
@@ -843,7 +842,7 @@ int main(int count, char *strings[])
         fprintf(stderr,"Unable to find config file, tried: %s\n",conf_file_name);
         exit(1);
     }
-       
+       sd_notify(0, "READY=1");
       pthread_t hepp;			/*thread handler*/
       LOG_INFO("daemon start.");
       g_threadworking = 1;		/*thread working variable*/
