@@ -12,7 +12,7 @@
 #include <resolv.h>
 #include <netdb.h>
 #include <signal.h>
-#include "mysql_connection.h"
+#include <mysql_connection.h>
 #include <sys/stat.h> // stat
 #include <errno.h>    // errno, ENOENT, EEXIST
 #include <cppconn/driver.h>
@@ -51,19 +51,19 @@ int createDomainXML(char *p, const char* domain, const char* registrant); /*crea
 long long int mi(int y, int m, int d, int h, int mm, int ss, long long int nanosec);/*convert date to second*/
 long long int timeSub(const char *time1);		/*substract time with current time*/
 void *epp_thread_body(void * arg);	/*main thread body*/
-int read_conf_file();				/*read conf file*/	
+int read_conf_file();				/*read conf file*/
 
 /************************************************************************************
  *Global variable definitions
  ************************************************************************************/
 int g_threadworking=0;				/*thread working variable*/
 string db_host;				/*mysql database hostname*/
-string db_user;				/*mysql database username*/	
-string db_pass;				/*mysql database password*/	
-string db_name;				/*mysql database name*/	
+string db_user;				/*mysql database username*/
+string db_pass;				/*mysql database password*/
+string db_name;				/*mysql database name*/
 string db_port = "3306";				/*mysql database port*/
 string epp_host;				/*EPP server name*/
-string epp_port;				/*EPP server port*/
+int epp_port;				/*EPP server port*/
 string epp_password;			/*EPP Client password*/
 string epp_clid;			/*EPP client ID*/
 float prepare_time = 1;			/*send create xml start time*/
@@ -151,15 +151,15 @@ int checkResult(IN char *presult) {
 
 /***********************************************************************
  * This function create xml string to login
- * after server say greeting, we have to login before any command performs	
+ * after server say greeting, we have to login before any command performs
  * p is completed login string. using clid and password, we can log in.
  ************************************************************************/
 int createLoginXML(OUT char *p) {
-    char loginxml[] = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<epp xmlns=\"urn:ietf:params:xml:ns:epp-1.0\" xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" xsi:schemaLocation=\"urn:ietf:params:xml:ns:epp-1.0 epp-1.0.xsd\">\n\t<command>\n\t\t<login>\n\t\t\t<clID>%s</clID>\n\t\t\t<pw>%s</pw>\n\t\t\t<options>\n\t\t\t\t<version>1.0</version>\n\t\t\t\t<lang>en</lang>\n\t\t\t</options>\n\t\t\t<svcs>\n\t\t\t\t<objURI>urn:ietf:params:xml:ns:domain-1.0</objURI>\n\t\t\t\t<objURI>urn:ietf:params:xml:ns:contact-1.0</objURI>\n\t\t\t\t<objURI>urn:ietf:params:xml:ns:host-1.0</objURI>\n\t\t\t</svcs>\n\t\t</login>\n\t\t<clTRID>ABC-112233445</clTRID>\n\t</command>\n</epp>";	
-    char temp[1000] = {0}; /*XML log template*/	
+    char loginxml[] = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<epp xmlns=\"urn:ietf:params:xml:ns:epp-1.0\" xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" xsi:schemaLocation=\"urn:ietf:params:xml:ns:epp-1.0 epp-1.0.xsd\">\n\t<command>\n\t\t<login>\n\t\t\t<clID>%s</clID>\n\t\t\t<pw>%s</pw>\n\t\t\t<options>\n\t\t\t\t<version>1.0</version>\n\t\t\t\t<lang>en</lang>\n\t\t\t</options>\n\t\t\t<svcs>\n\t\t\t\t<objURI>urn:ietf:params:xml:ns:domain-1.0</objURI>\n\t\t\t\t<objURI>urn:ietf:params:xml:ns:contact-1.0</objURI>\n\t\t\t\t<objURI>urn:ietf:params:xml:ns:host-1.0</objURI>\n\t\t\t</svcs>\n\t\t</login>\n\t\t<clTRID>ABC-112233445</clTRID>\n\t</command>\n</epp>";
+    char temp[1000] = {0}; /*XML log template*/
     int n;
 
-    sprintf(temp, loginxml, epp_clid, epp_password); /*using clid, password get completed login string*/
+    sprintf(temp, loginxml, epp_clid.c_str(), epp_password.c_str()); /*using clid, password get completed login string*/
     n = strlen(temp);				/*calculate length*/
     makeChar(n + 4, p);			/*calculate header*/
     memcpy(p+4, temp, n);			/*append body*/
@@ -169,8 +169,8 @@ int createLoginXML(OUT char *p) {
 /***********************************************************************
  * This function create registrant xml.
  * to create domain, we have to use registrant id and registrant has to be created before use.
- * to create registrant, we need many informations about him/her	
- * p is completed login string. 
+ * to create registrant, we need many informations about him/her
+ * p is completed login string.
  * registant is registant_id(generate by random)
  * name is registant name, org is registant's orgnizatiom.
  * street is street who registrant live, city is same
@@ -191,7 +191,7 @@ int createRegistrantXML(OUT char *p,IN const char *registant,IN const char* name
 }
 /***********************************************************************
  * This function create hello xml string
- * we send hello xml every 50 min, so always communication keep open	
+ * we send hello xml every 50 min, so always communication keep open
  * hello xml template is short
  ************************************************************************/
 int createHelloXML(OUT char *p) {
@@ -203,7 +203,7 @@ int createHelloXML(OUT char *p) {
 }
 /***********************************************************************
  * This function create domain xml string
- * after domain name, and registrant id get, we can create domain	
+ * after domain name, and registrant id get, we can create domain
  * from template, we make completed xml string.
  ************************************************************************/
 int createDomainXML(OUT char *p, IN const char* domain, IN const char* registrant) {
@@ -220,7 +220,7 @@ int createDomainXML(OUT char *p, IN const char* domain, IN const char* registran
 }
 /***********************************************************************
  * This function convert date to second
- * we have to calculate timer substraction continously.	
+ * we have to calculate timer substraction continously.
  * get second from date values.
  * y = year, m- month, d- day, h - hour, mm -min, ss- second
  ************************************************************************/
@@ -242,7 +242,7 @@ long long int timeSub(IN const char *time1) {
     struct timespec ts;
     timespec_get(&ts, TIME_UTC);
     tm *gmtm = gmtime(&ts.tv_sec);
-	
+
     int yy,mm,dd, hh, mmin, ss;
     char tmp[5] = {0};
     memcpy(tmp, time1, 4);
@@ -305,7 +305,7 @@ void save_domain_catch_to_log(sql::Connection *con) {
   res = stmt->executeQuery(buf);	/*mysql get string*/
   while (res->next()) {
     string id = res->getString(1);		/*id of drop_cathes*/
-    string domain = res->getString(2);	/*domain to register*/	
+    string domain = res->getString(2);	/*domain to register*/
     string dropping = res->getString(3);	/*expired time*/
     string roid = res->getString(4);	/*repo id*/
     string drid = res->getString(5);	/*domain_registrants id*/
@@ -353,16 +353,23 @@ void *epp_thread_body(IN void * arg) {
     connection_properties["schema"] = db_name;
     connection_properties["port"] = stoi(db_port);
     connection_properties["OPT_RECONNECT"] = true;
-    
-    driver = get_driver_instance();
-    con = driver->connect(connection_properties);		/*mysql connect*/
-    if(con == NULL) {
-      LOG_ERROR("MariaDB connection failed.");
-      exit(4);
+
+    try {
+        driver = get_driver_instance();
+        con = driver->connect(connection_properties);		/*mysql connect*/
+        if(con == NULL) {
+          LOG_ERROR("MariaDB connection failed.");
+          exit(3);
+        }
+    } catch (sql::SQLException &e) {
+        fprintf(stderr, "Unable to connect to SQL server: %s\n", e.what());
+        exit(3);
     }
+
     LOG_INFO("MariaDB connection success.");
     save_domain_catch_to_log(con);
-    
+    fprintf(stdout, "Startup successful.\n");
+    sd_notify(0, "READY=1");
     SSL_CTX *ctx;						/*structure for Ssl communication*/
     int server;						/*socket varialbe*/
     SSL *ssl;							/*SSL layer varialbe combined with server socket*/
@@ -372,13 +379,13 @@ void *epp_thread_body(IN void * arg) {
     int ball = 0;						/*temp variable for all read bytes*/
     int nheader = 0;					/*header length*/
     int nsuccess = 0;					/*success flag*/
-    
+
     int attentiontime = 0;			/*thread running every 5 ssecond and if attention flag set then work as 1 second*/
     int nsleeptime=prepare_time * 1000000;	/*sleep time in ms*/
     SSL_library_init();			/*init ssl*/
 
     ctx = InitCTX();				/*init structure*/
-    server = OpenConnection(epp_host.c_str(), stoi(epp_port));	/*socket connection established*/
+    server = OpenConnection(epp_host.c_str(), epp_port);	/*socket connection established*/
     ssl = SSL_new(ctx);      /* create new SSL connection state */
     SSL_set_fd(ssl, server);    /* attach the socket descriptor */
 
@@ -410,7 +417,7 @@ void *epp_thread_body(IN void * arg) {
     nheader = 0;
     ball = 0;
     nsuccess = 0;
-    bytes = SSL_write(ssl,buf,nn);	/*write login body*/	
+    bytes = SSL_write(ssl,buf,nn);	/*write login body*/
 
     LOG_DEBUG("send data to server.");
     while(1) {
@@ -448,13 +455,13 @@ void *epp_thread_body(IN void * arg) {
     char tempbuf[20]={0};
     srand(time(0));
     long long int nsecbefore, ll;
-   
+
     while(g_threadworking) {			/*thread working body*/
         nsleeptime = attentiontime > 0 ? final_time * 1000000 : prepare_time*1000000;/*sleep 1 when prepare domain registering, sleep 5 normal*/
         usleep(nsleeptime);				/*thread sleep*/
         nsecs += nsleeptime / 1000000;			/*calculate whole sleep time*/
         attentiontime = attentiontime > 0 ? attentiontime - nsleeptime : attentiontime;
-        
+
         //printf("sleep time: %dms\n", nsleeptime / 1000);
         stmt = con->createStatement();
         memset(buf, 0, 0x1000);
@@ -462,13 +469,13 @@ void *epp_thread_body(IN void * arg) {
         res = stmt->executeQuery(buf);	/*mysql get string*/
         while (res->next()) {
             string id = res->getString(1);		/*id of drop_cathes*/
-            string domain = res->getString(2);	/*domain to register*/	
+            string domain = res->getString(2);	/*domain to register*/
             string dropping = res->getString(3);	/*expired time*/
             string roid = res->getString(4);	/*repo id*/
             string drid = res->getString(5);	/*domain_registrants id*/
             string reg_id = res->getString(6);	/*register id*/
             string org = res->getString(7);		/*orgnizatiom*/
-            string name = res->getString(8);		/*name*/	
+            string name = res->getString(8);		/*name*/
             string street = res->getString(9);		/*street*/
             string city = res->getString(10);	/*city*/
             string postcode = res->getString(11);  /*post code*/
@@ -528,12 +535,12 @@ void *epp_thread_body(IN void * arg) {
                 if(attentiontime < prepare_time*1000000) /*set attention time, thread will work sleep 1 until this time passed*/
                     attentiontime += prepare_time*1000000; /*we need to pay attention before 15 sec after 5 sec.*/
             }
-	    //ll = get_tick();
+        //ll = get_tick();
             //printf("time2: %lld\n",ll);
 
             if(nsecbefore <=0) { //expired and send create command
                 //ll=get_tick();
-              	//printf("domain create start.\n");
+                //printf("domain create start.\n");
                 memset(buf, 0, 0x1000);
                 nn = createDomainXML(buf, domain.c_str(),reg_id.c_str());	/*create domain xml*/
                 ll = get_tick();
@@ -564,7 +571,7 @@ void *epp_thread_body(IN void * arg) {
                     if(nheader == ball)		/*if all read break;*/
                         break;
                 }
-                 
+
                 sql::Statement *stmp = con->createStatement();
                 calc_current_time();
                 long long int ln = get_tick();
@@ -574,7 +581,7 @@ void *epp_thread_body(IN void * arg) {
                     //printf("domain create success\n");		/*save state to domain_catches*/
                     LOG_INFO(buf);
                     memset(buf, 0, 0x1000);
-                    sprintf(buf, "UPDATE %s SET status='success', updated_at='%s' WHERE id='%s'",table_catch.c_str(),curtime_string, id.c_str());       
+                    sprintf(buf, "UPDATE %s SET status='success', updated_at='%s' WHERE id='%s'",table_catch.c_str(),curtime_string, id.c_str());
                 }
                 else {
                     memset(buf, 0, 0x1000);
@@ -585,9 +592,9 @@ void *epp_thread_body(IN void * arg) {
                     sprintf(buf, "UPDATE %s SET status='failed', updated_at='%s' WHERE id='%s'",table_catch.c_str(),curtime_string, id.c_str());
                 }
                 //printf(buf);
-                stmp->execute(buf);          
+                stmp->execute(buf);
                 delete stmp;
-                
+
             }
         }
         if(nsecs >=3000 ) { //Send hello every 50 minutes to keep communication open
@@ -715,11 +722,16 @@ void check_config_value_missing(IN const char*name, IN string psval) {
 void save_to_log_in_start(IN const char *field, IN string value) {
   char tmp[300] = {0};
   int len = value.length();
-  if(strcmp(field, "DB_PASSWORD") == 0 || strcmp(field, "EPP_SECRET") == 0)
+  if(strcmp(field, "db.password") == 0 || strcmp(field, "epp.secret") == 0)
     sprintf(tmp, "%s: %c********%c", field, value[0], value[len-1]);
   else
     sprintf(tmp, "%s: %s", field, value.c_str());
   LOG_INFO(tmp);
+}
+
+inline bool file_exist_check (const std::string& name) {
+  struct stat buffer;
+  return (stat (name.c_str(), &buffer) == 0);
 }
 /***********************************************************************
  * This function read config file/
@@ -729,93 +741,111 @@ void save_to_log_in_start(IN const char *field, IN string value) {
  ************************************************************************/
 int read_conf_file() {
     libconfig::Config config;
-
-    
+    bool exist = file_exist_check (conf_file_name);
+    if(exist == false) {
+        return 0;
+    }
     config.readFile(conf_file_name);
     const Setting& root = config.getRoot();
-    const Setting &fundamental = root["fundamental"];
-    const Setting &mi = root["miscellaneous"];
+    const Setting &db = root["db"];
+    const Setting &table = db[5];
+
+    const Setting &epp= root["epp"];
+    const Setting &log = root["log"];
+    const Setting &app = root["app"];
+    char tmp[10] = {0};
     /*Very important field*/
-    fundamental.lookupValue("DB_HOSTNAME", db_host);	/*read db_hostname*/
-    check_config_value_missing("DB_HOSTNAME", db_host);
-    
-    fundamental.lookupValue("DB_USERENAME", db_user);	/*read db_username*/    
-    check_config_value_missing("DB_USERNAME", db_user);
-    
-    fundamental.lookupValue("DB_PASSWORD", db_pass);	/*read db_password*/    
-    check_config_value_missing("DB_PASSWORD", db_pass);
-    
-    fundamental.lookupValue("DB_DATABASE", db_name);	/*read db_database*/    
-    check_config_value_missing("DB_DATABASE", db_name);
-    
-    fundamental.lookupValue("DB_TABLE_DROP", table_drop);	/*read table_drop*/
-    check_config_value_missing("DB_TABLE_DROP", table_drop);
-    
-    fundamental.lookupValue("DB_TABLE_CATCH", table_catch);	/*read table_catch*/ 
-    check_config_value_missing("DB_TABLE_CATCH", table_catch);
-       
-    fundamental.lookupValue("EPP_HOSTNAME", epp_host);	/*read epp hostname*/
-    check_config_value_missing("EPP_HOSTNAME", epp_host);
-    
-    fundamental.lookupValue("EPP_PORT", epp_port);		/*read epp host port*/
-    check_config_value_missing("EPP_PORT", epp_port);
-    
-    fundamental.lookupValue("EPP_SECRET", epp_password);	/*read epp password*/
-    check_config_value_missing("EPP_SECRET", epp_password);
-    
-    fundamental.lookupValue("EPP_CLID", epp_clid);		/*read epp client*/
-    check_config_value_missing("EPP_CLIENT_ID", epp_clid);
-    
-    /*additional config value*/
-    mi.lookupValue("LOG_LEVEL", log_level); /*log level*/
-    mi.lookupValue("DB_PORT", db_port);		/*read port*/
-        
+    db.lookupValue("hostname", db_host);	/*read db_hostname*/
+    check_config_value_missing("db.hostname", db_host);
+
+    db.lookupValue("username", db_user);	/*read db_username*/
+    check_config_value_missing("db.username", db_user);
+
+    db.lookupValue("password", db_pass);	/*read db_password*/
+    check_config_value_missing("db.password", db_pass);
+
+    db.lookupValue("database", db_name);	/*read db_database*/
+    check_config_value_missing("db.database", db_name);
+
+    db.lookupValue("port", db_port);		/*read port*/
+
     if(stoi(db_port) > 65535 || stoi(db_port) < 1024 || db_port.length()> 5) {
       fprintf(stderr, "Invalid config value for database port. set default value 3306.\n");
       db_port = "3306";
     }
-    mi.lookupValue("PREPARE_TIME", prepare_time);	/*send start*/
-  
+
+    table.lookupValue("drop", table_drop);	/*read table_drop*/
+    check_config_value_missing("table.drop", table_drop);
+
+    table.lookupValue("catch", table_catch);	/*read table_catch*/
+    check_config_value_missing("table.catch", table_catch);
+
+    epp.lookupValue("hostname", epp_host);	/*read epp hostname*/
+    check_config_value_missing("epp.hostname", epp_host);
+
+    epp.lookupValue("port", epp_port);		/*read epp host port*/
+    //check_config_value_missing("epp.port", epp_port);
+    memset(tmp, 0, 10);
+    sprintf(tmp, "%d", epp_port);
+    check_config_value_missing("epp.port", tmp);
+    epp.lookupValue("secret", epp_password);	/*read epp password*/
+    check_config_value_missing("epp.secret", epp_password);
+
+    epp.lookupValue("clid", epp_clid);		/*read epp client*/
+    check_config_value_missing("epp.clid", epp_clid);
+
+    /*additional config value*/
+    log.lookupValue("level", log_level); /*log level*/
+
+    if(strstr(log_level.c_str(), "DEBUG"))
+        log_level_flags[0] = 1;
+    if(strstr(log_level.c_str(), "INFO"))
+        log_level_flags[1] = 1;
+    if(strstr(log_level.c_str(), "WARN"))
+        log_level_flags[2] = 1;
+    if(strstr(log_level.c_str(), "ERROR"))
+        log_level_flags[3] = 1;
+
+    app.lookupValue("prepare_time", prepare_time);	/*send start*/
+
     if(prepare_time < 0.1) {
       fprintf(stderr, "Invalid config value for prepare time. set default value 60.\n");
       prepare_time = 60;
     }
-    mi.lookupValue("FINAL_TIME", final_time);	/*send interval*/
-    
+    app.lookupValue("final_time", final_time);	/*send interval*/
+
     if(final_time >= 0.1 || final_time <= 0) {
       fprintf(stderr, "Invalid config value for final time. set default value 0.01.\n");
       final_time = 0.01;
     }
-    
- 
-    LOG_INFO("starting.");
-    save_to_log_in_start("DB_HOSTNAME", db_host);		/*save logs*/
-    save_to_log_in_start("DB_USERNAME", db_user);
-    save_to_log_in_start("DB_PASSWORD", db_pass);
-    save_to_log_in_start("DB_DATABASE", db_name);
-    save_to_log_in_start("DB_TABLE_DROP", table_drop);
-    save_to_log_in_start("DB_TABLE_CATCH", table_catch);   
-    save_to_log_in_start("EPP_HOSTNAME", epp_host);
-    save_to_log_in_start("EPP_PORT", epp_port);
-    save_to_log_in_start("EPP_SECRET", epp_password);
-    save_to_log_in_start("EPP_CLIENT_ID", epp_clid);
-    save_to_log_in_start("LOG_LEVEL", log_level);
-    save_to_log_in_start("DB_PORT", db_port);
-    char tmp[10] = {0};
-    sprintf(tmp, "%f", prepare_time);
-    save_to_log_in_start("PREPARE_TIME", tmp);
-    memset(tmp, 0, 10);
-    sprintf(tmp, "%f", final_time);
-    save_to_log_in_start("FINAL_TIME", tmp);
-    
-    if(strstr(log_level.c_str(), "DEBUG"))
-    	log_level_flags[0] = 1;
-    if(strstr(log_level.c_str(), "INFO"))
-    	log_level_flags[1] = 1;
-    if(strstr(log_level.c_str(), "WARN"))
-    	log_level_flags[2] = 1;
-    if(strstr(log_level.c_str(), "ERROR"))
-    	log_level_flags[3] = 1;	
+
+
+
+    if(log_level_flags[0] == 1) {
+      LOG_INFO("Config set:");
+      save_to_log_in_start("db.hostname", db_host);		/*save logs*/
+      save_to_log_in_start("db.username", db_user);
+      save_to_log_in_start("db.password", db_pass);
+      save_to_log_in_start("db.database", db_name);
+      save_to_log_in_start("db.port", db_port);
+      save_to_log_in_start("table.drop", table_drop);
+      save_to_log_in_start("table.catch", table_catch);
+      save_to_log_in_start("epp.hostname", epp_host);
+      memset(tmp, 0, 10);
+      sprintf(tmp, "%d", epp_port);
+      save_to_log_in_start("epp.port", tmp);
+      save_to_log_in_start("epp.secret", epp_password);
+      save_to_log_in_start("epp.clid", epp_clid);
+      save_to_log_in_start("log.level", log_level);
+
+      memset(tmp, 0, 10);
+      sprintf(tmp, "%f", prepare_time);
+      save_to_log_in_start("app.prepare_time", tmp);
+      memset(tmp, 0, 10);
+      sprintf(tmp, "%f", final_time);
+      save_to_log_in_start("app.final_time", tmp);
+    }
+
     return 1;
 }
 
@@ -842,7 +872,7 @@ int main(int count, char *strings[])
         fprintf(stderr,"Unable to find config file, tried: %s\n",conf_file_name);
         exit(1);
     }
-       sd_notify(0, "READY=1");
+
       pthread_t hepp;			/*thread handler*/
       LOG_INFO("daemon start.");
       g_threadworking = 1;		/*thread working variable*/
@@ -863,7 +893,7 @@ int main(int count, char *strings[])
 
       pthread_join(hepp, &res); free(res);	/*waiting thread finish*/
       LOG_INFO("daemon quit.");			/*program ends*/
-        
+
     return 0;
 }
 
@@ -880,6 +910,7 @@ void  SIGINT_handler(IN int sig)
     signal(sig, SIGINT_handler);
     g_threadworking = 0;
     LOG_INFO("daemon SIGHUP | SIGINT received.");
+    sd_notify(0, "STOPPING=1");
 }
 
 /* ---------------------------------------------------------------- */
@@ -895,7 +926,9 @@ void  SIGHUP_handler(IN int sig)
     signal(sig, SIGHUP_handler);
     g_threadworking=0;
     LOG_INFO("daemon SIGHUP | SIGINT received.");
+    sd_notify(0, "RELOADING=1");
     execve(prg, (char* const*)prg, NULL);
+
     //exit(42);
 }
 /* ---------------------------------------------------------------- */
@@ -909,9 +942,8 @@ void  SIGKILL_handler(IN int sig)
     signal(sig, SIG_IGN);
     //printf("From SIGKILL: just got a %d (SIGKILL ^\\) signal"
      //       " and is about to quit\n", sig);
-
+    sd_notifyf(0, "STATUS=Exit by sigkill.");
 
     exit(3);
 }
-
 

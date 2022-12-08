@@ -8,10 +8,10 @@
 #include <type_traits>
 
 #define LOG_INFO(...) Log(std::clog, "INFO").write(__VA_ARGS__)
-#define LOG_WARNING(...) Log(std::clog, "WARNING", __FUNCTION__, __LINE__).write(__VA_ARGS__)
+#define LOG_WARNING(...) Log(std::clog, "WARN", __FUNCTION__, __LINE__).write(__VA_ARGS__)
 #define LOG_ERROR(...) Log(std::clog, "ERROR", __FUNCTION__, __LINE__).write(__VA_ARGS__)
 #define LOG_DEBUG(...) Log(std::clog, "DEBUG", __FUNCTION__, __LINE__).write(__VA_ARGS__)
-
+#define LOG_LEVEL(...) Log(std::clog, "LEVEL").write(__VA_ARGS__)
 inline std::string getLogTime(std::chrono::time_point<std::chrono::system_clock> time) {
     auto epoch_seconds = std::chrono::system_clock::to_time_t(time);
     std::stringstream stream;

@@ -2,10 +2,13 @@
 Description=Dropcatch service
 
 [Service]
-User=joker
+Type=simple
+User=dropcatch
 WorkingDirectory=/home/dropcatch/src
 ExecStart=/home/dropcatch/src/dropcatch
 Restart=no
-
+StandardOutput=syslog
+StandardError=syslog
+SyslogIdentifier=%n
 [Install]
 WantedBy=multi-user.target
